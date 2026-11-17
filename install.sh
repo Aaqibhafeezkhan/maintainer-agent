@@ -86,7 +86,7 @@ if [ "$uninstall" = 1 ]; then
     done
     # --timers creates one stamp per profile. Remove only our stamps; this
     # directory can contain state owned by other software.
-    for s in "$HOME"/.local/share/systemd/timers/stamp-*; do
+    for s in "$HOME"/.local/share/systemd/timers/stamp-maintainer@*.timer; do
         [ -e "$s" ] || continue
         step run rm -f "$s"
     done
