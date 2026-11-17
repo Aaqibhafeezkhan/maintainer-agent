@@ -3174,6 +3174,23 @@ grep -q "enable --now \*\.timer" "$SYSTEMCTL_LOG" && bad "--timers passed an une
 [ -e "$th/.local/share/systemd/timers" ] && ok "a stamp is written before enabling (no catch-up storm)" \
     || bad "no stamp written; enabling fires every missed slot at once"
 
+# A checkout may carry timer units for profiles it does not deploy. Only the
+# deployed profile's units may be enabled; the others are reported and skipped.
+timer_src="$stub_dir/timer-src"; timer_home="$stub_dir/timer-home"
+mkdir -p "$timer_src" "$timer_home"
+cp -r "$root/." "$timer_src/"
+rm -rf "$timer_src/.git" "$timer_src/profiles/sysknife"
+SYSTEMCTL_LOG="$stub_dir/systemctl-filter.log"; : > "$SYSTEMCTL_LOG"
+PATH="$stub_dir:$PATH" HOME="$timer_home" SYSTEMCTL_LOG="$SYSTEMCTL_LOG" \
+    "$timer_src/install.sh" --timers > "$stub_dir/timer-filter.out" 2>&1
+if ! grep -q 'enable --now maintainer@sysknife-' "$SYSTEMCTL_LOG" \
+    && [ "$(grep -c 'enable --now maintainer@magent-' "$SYSTEMCTL_LOG")" = 2 ] \
+    && grep -q 'skipped maintainer@sysknife-' "$stub_dir/timer-filter.out"; then
+    ok "--timers enables only deployed profiles and reports skipped profile units"
+else
+    bad "--timers enabled an undeployed profile or failed to report skipped units: $(cat "$SYSTEMCTL_LOG")"
+fi
+
 echo "== every command the prompt names is declared, and resolves =="
 # A prompt told an unattended run to call `sysknife-maint screen <pr>` after that
 # command had been renamed to `maintainer screen`. The run report carried a

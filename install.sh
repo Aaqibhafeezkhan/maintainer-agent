@@ -291,6 +291,12 @@ if [ "$timers" = 1 ]; then
     for t in "$root"/platform/linux/*.timer; do
         [ -e "$t" ] || continue
         name="$(basename "$t")"
+        profile_task="${name#maintainer@}"
+        profile="${profile_task%%-*}"
+        if [ ! -f "$share/profiles/$profile/profile.env" ]; then
+            say "skipped $name (profile $profile is not deployed)"
+            continue
+        fi
         # Write a stamp first. A fresh Persistent=true timer treats "never run"
         # as a missed slot and fires a catch-up run the instant it is enabled,
         # which lands a job on top of whatever a human is doing right now.
