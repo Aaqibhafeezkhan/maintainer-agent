@@ -292,8 +292,12 @@ if [ "$timers" = 1 ]; then
         [ -e "$t" ] || continue
         name="$(basename "$t")"
         profile_task="${name#maintainer@}"
-        profile="${profile_task%%-*}"
-        if [ ! -f "$share/profiles/$profile/profile.env" ]; then
+        # The task is the text after the LAST hyphen (run-instance.sh splits the
+        # same way): a profile may be named after a hyphenated repository.
+        profile="${profile_task%-*}"
+        # Judge the checkout's profiles, not $share: a dry run has not copied them
+        # there yet, and the real install copies every profile the checkout holds.
+        if [ ! -f "$root/profiles/$profile/profile.env" ]; then
             say "skipped $name (profile $profile is not deployed)"
             continue
         fi
