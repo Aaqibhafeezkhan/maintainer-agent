@@ -4,12 +4,12 @@
 
 # maintainer-agent
 
-[![ci](https://github.com/vladimirrott/maintainer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/vladimirrott/maintainer-agent/actions/workflows/ci.yml)
-[![secret scan](https://github.com/vladimirrott/maintainer-agent/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/vladimirrott/maintainer-agent/actions/workflows/secret-scan.yml)
+[![ci](https://github.com/agentsmith-tools/maintainer-agent/actions/workflows/ci.yml/badge.svg)](https://github.com/agentsmith-tools/maintainer-agent/actions/workflows/ci.yml)
+[![secret scan](https://github.com/agentsmith-tools/maintainer-agent/actions/workflows/secret-scan.yml/badge.svg)](https://github.com/agentsmith-tools/maintainer-agent/actions/workflows/secret-scan.yml)
 [![licence: MIT](https://img.shields.io/badge/licence-MIT-blue.svg)](LICENSE)
-[![docs](https://img.shields.io/badge/docs-vladimirrott.github.io-informational)](https://vladimirrott.github.io/maintainer-agent/)
+[![docs](https://img.shields.io/badge/docs-agentsmith--tools.github.io-informational)](https://agentsmith-tools.github.io/maintainer-agent/)
 
-**[Read the documentation](https://vladimirrott.github.io/maintainer-agent/)**,
+**[Read the documentation](https://agentsmith-tools.github.io/maintainer-agent/)**,
 built from `docs/` on every push to `main`.
 
 An unattended maintainer for an open-source repository. It runs Claude Code (or

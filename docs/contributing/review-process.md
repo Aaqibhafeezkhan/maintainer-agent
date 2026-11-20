@@ -53,7 +53,7 @@ Steps 4 and 5 repeat until nothing blocks. Steps 6 to 9 follow once.
    maintainer approves them, and holds the runs of every later push the same way
    until one of your commits has merged. The repository's setting is
    `first_time_contributors`, which you can read with
-   `gh api repos/vladimirrott/maintainer-agent/actions/permissions/fork-pr-contributor-approval`.
+   `gh api repos/agentsmith-tools/maintainer-agent/actions/permissions/fork-pr-contributor-approval`.
    A held run shows as `action_required`, and a maintainer who sees it clicks
    Approve. We never approve a run for a pull request that touches
    `.github/workflows/**`: a fork that can change a workflow and have it run with

@@ -25,7 +25,7 @@ middle digit.
 
 ### Security
 
-- **`merge` refuses a head it cannot read.** ([#216](https://github.com/vladimirrott/maintainer-agent/pull/216))
+- **`merge` refuses a head it cannot read.** ([#216](https://github.com/agentsmith-tools/maintainer-agent/pull/216))
   The merge read the pull request's head with no check of `gh`'s exit status. A
   `gh` that failed there left the head empty, and the merge ran with
   `--match-head-commit ""`, which removes the fence against a push landing
@@ -33,7 +33,7 @@ middle digit.
   commit id before any other fact is read, or the merge refuses (plan decision
   F9). Found while writing characterization cases for the gate.
 - **`verify` refuses a mutation of production code the pull request did not
-  change.** ([#216](https://github.com/vladimirrott/maintainer-agent/pull/216))
+  change.** ([#216](https://github.com/agentsmith-tools/maintainer-agent/pull/216))
   The check asked whether the mutation hit production code and never whether it
   hit the diff, so a mutation of any other production file earned a receipt that
   spoke for a change nothing there had broken. The refusal names the mutated file
@@ -61,14 +61,14 @@ middle digit.
   review prompts name the order verify, approve, update if BEHIND, wait for green,
   merge. Lesson 120.
 - **`MX_TREE` runs the offline suite against any tree with the repository
-  layout.** ([#213](https://github.com/vladimirrott/maintainer-agent/pull/213))
+  layout.** ([#213](https://github.com/agentsmith-tools/maintainer-agent/pull/213))
   The first output line names the tree under test. A tree without
   `bin/maintainer-merge`, `lib/run.sh` or `profiles/` exits 2 before any case
   runs. 255 cases that read program source are tagged, and
   `MX_SKIP_SOURCE_COUPLED=1` skips them and counts each as a skip, for a tree
   whose programs are compiled.
 - **A differential recorder compares two program trees.**
-  ([#217](https://github.com/vladimirrott/maintainer-agent/pull/217))
+  ([#217](https://github.com/agentsmith-tools/maintainer-agent/pull/217))
   `tests/diff/record.sh` runs 17 scenarios under `env -i` with logging stubs and
   writes the argv each stub received, the exit code, stdout, stderr and a hash of
   the state tree. `compare.sh` exits 0 only for zero differences and 2 for any
@@ -76,14 +76,14 @@ middle digit.
   stdin, timestamp format) are recorded in the migration plan before it gates a
   port.
 - **170 characterization cases pin what `maintainer-merge` does.**
-  ([#216](https://github.com/vladimirrott/maintainer-agent/pull/216))
+  ([#216](https://github.com/agentsmith-tools/maintainer-agent/pull/216))
   `tests/run-characterization.sh` covers the `gh pr merge` argv, the `POST=off`
   rehearsal, usage and exit codes by value, the check board, the staleness check,
   `identity()` failures, stdout against stderr, hostile `show` arguments and a
   known-answer receipt vector. Each case runs under `env -i` with stubbed `gh`,
   `podman`, `docker`, `curl`, `wget`, `ssh` and `flock`.
 - **A Rust workspace skeleton.**
-  ([#215](https://github.com/vladimirrott/maintainer-agent/pull/215))
+  ([#215](https://github.com/agentsmith-tools/maintainer-agent/pull/215))
   `rust/` holds `mx-core` (`Fact`, `Refusal` with an exhaustive exit-code table,
   `NonEmpty`) and `mx-ports` (traits, fakes and `RealProc`), a clippy ban on
   `Command::new` outside `mx-ports`, `scripts/rust-gate.sh` and a `rust` CI job.
@@ -99,8 +99,8 @@ middle digit.
   plus `netcat-openbsd`), and `maintainer-doctor` checks the image carries `nc`
   and the recipe matches.
 - **Concurrent commits can no longer take the machine out of memory.**
-  ([#214](https://github.com/vladimirrott/maintainer-agent/pull/214),
-  [#216](https://github.com/vladimirrott/maintainer-agent/pull/216))
+  ([#214](https://github.com/agentsmith-tools/maintainer-agent/pull/214),
+  [#216](https://github.com/agentsmith-tools/maintainer-agent/pull/216))
   On 2026-11-09 four worktrees committed at once. Two shellcheck sweeps
   (`tests/run-tests.sh` alone peaks at 8.7 GB) overlapped, and the kernel hit a
   global OOM twice and killed the terminal. An address-space `ulimit` does not
@@ -1072,7 +1072,7 @@ or that a day of doing its job by hand made visible.
   the rest between them, and counts the paths no suite covers at all. A refusal
   nobody can act on is a refusal people route around with `--admin`, which is
   what happened. The rule itself is unchanged and is [issue
-  #19](https://github.com/vladimirrott/maintainer-agent/issues/19).
+  #19](https://github.com/agentsmith-tools/maintainer-agent/issues/19).
 
 ### Fixed
 
@@ -1177,7 +1177,7 @@ built for.
 - **`docs/roadmap.md`**: where everything goes, what a new backend has to prove
   before it may post, and which drifts CI still cannot catch.
 - **A documentation site** at
-  [vladimirrott.github.io/maintainer-agent](https://vladimirrott.github.io/maintainer-agent/),
+  [agentsmith-tools.github.io/maintainer-agent](https://agentsmith-tools.github.io/maintainer-agent/),
   mdBook, built by a workflow with a checksum-verified toolchain download.
 - **A Cursor deny wall**, generated from the same `deny.json` as every other
   backend, live and rehearsal.
@@ -1544,22 +1544,22 @@ since 2026-09-02 and this repository since 2026-09-03.
 - `maintainer-repo prune` and `maintainer-merge merge` honour `POST=off`. Both
   write from inside a script, where no deny rule can see them.
 
-[Unreleased]: https://github.com/vladimirrott/maintainer-agent/compare/v0.11.0...HEAD
-[0.11.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.11.0
-[0.10.1]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.10.1
-[0.10.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.10.0
-[0.9.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.9.0
-[0.8.1]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.8.1
-[0.8.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.8.0
-[0.7.2]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.7.2
-[0.7.1]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.7.1
-[0.7.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.7.0
-[0.6.2]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.6.2
-[0.6.1]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.6.1
-[0.6.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.6.0
-[0.5.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.5.0
-[0.4.1]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.4.1
-[0.4.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.4.0
-[0.3.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.3.0
-[0.2.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.2.0
-[0.1.0]: https://github.com/vladimirrott/maintainer-agent/releases/tag/v0.1.0
+[Unreleased]: https://github.com/agentsmith-tools/maintainer-agent/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.11.0
+[0.10.1]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.10.1
+[0.10.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.10.0
+[0.9.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.9.0
+[0.8.1]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.8.1
+[0.8.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.8.0
+[0.7.2]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.7.2
+[0.7.1]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.7.1
+[0.7.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.7.0
+[0.6.2]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.6.2
+[0.6.1]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.6.1
+[0.6.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.6.0
+[0.5.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.5.0
+[0.4.1]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.4.1
+[0.4.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.4.0
+[0.3.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.3.0
+[0.2.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.2.0
+[0.1.0]: https://github.com/agentsmith-tools/maintainer-agent/releases/tag/v0.1.0

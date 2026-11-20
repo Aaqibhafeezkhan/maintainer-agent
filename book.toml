@@ -7,8 +7,8 @@ src = "docs"
 
 [output.html]
 site-url = "/maintainer-agent/"
-git-repository-url = "https://github.com/vladimirrott/maintainer-agent"
-edit-url-template = "https://github.com/vladimirrott/maintainer-agent/edit/main/docs/{path}"
+git-repository-url = "https://github.com/agentsmith-tools/maintainer-agent"
+edit-url-template = "https://github.com/agentsmith-tools/maintainer-agent/edit/main/docs/{path}"
 default-theme = "navy"
 preferred-dark-theme = "navy"
 no-section-label = false
