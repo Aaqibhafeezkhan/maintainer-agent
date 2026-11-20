@@ -167,6 +167,25 @@ MUTANTS = [
     ("M79", S + "codex.rs", 'Err("codex not on PATH".to_string())', 'Err("codex is not on PATH".to_string())', "the check message"),
     ("M80", S + "codex.rs", 'argv.extend(["-m".to_string(), request.model.clone()]);', 'argv.extend(["--model".to_string(), request.model.clone()]);',
      "a flag renamed"),
+    # --- more argument, stream and host mutants ---------------------------------------
+    ("M81", S + "claude.rs", 'words(&["claude", "-p", "--settings"])', 'words(&["claude", "--settings"])', "-p dropped"),
+    ("M82", S + "cursor.rs", 'words(&["cursor-agent", "-p", "--output-format", "text", "-m"])',
+     'words(&["cursor-agent", "-p", "--force", "--output-format", "text", "-m"])', "--force is passed"),
+    ("M83", S + "opencode.rs", "bytes.retain(|byte| *byte != b'\\n' && *byte != 0);", "bytes.retain(|byte| *byte != b'\\n');",
+     "NUL bytes stay in the key"),
+    ("M84", S + "opencode.rs", "to_log(stage(argv, ctx), Some(&request.prompt_file), &request.log)", "to_log(stage(argv, ctx), None, &request.log)",
+     "the prompt is not on stdin"),
+    ("M85", S + "codex.rs", "to_log(stage(argv, ctx), Some(&request.prompt_file), &request.log)", "to_log(stage(argv, ctx), None, &request.log)",
+     "the prompt is not on stdin"),
+    ("M86", S + "cursor.rs", "to_log(stage(argv, ctx), None, &request.log)", "to_log(stage(argv, ctx), Some(&request.prompt_file), &request.log)",
+     "the prompt is also on stdin"),
+    ("M87", S + "host.rs", "std::fs::metadata(path).ok().map(|meta| meta.len())", "std::fs::metadata(path).ok().map(|meta| meta.len() + 1)",
+     "the real host reports one byte too many"),
+    ("M88", S + "host.rs", "std::fs::read(path).ok()", "None", "the real host reads nothing"),
+    ("M89", S + "host.rs", "std::fs::metadata(path).is_ok_and(|meta| meta.is_file())", "std::fs::metadata(path).is_ok()",
+     "a directory is a file"),
+    ("M90", S + "claude.rs", "let filter_present = host.is_file(&filter);", "let filter_present = !host.is_file(&filter);",
+     "the filter test is inverted"),
 ]
 
 LIMIT_BYTES = 24 << 30  # address space of one cargo run; rustc maps a lot, so this is generous
