@@ -1,0 +1,16 @@
+[package]
+name = "mx-backends"
+version = "0.1.0"
+description = "The four agent backends of lib/backends/*.sh as pure plan builders: what to check, which wall to use, and which pipeline to run"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+mx-core.workspace = true
+mx-ports.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

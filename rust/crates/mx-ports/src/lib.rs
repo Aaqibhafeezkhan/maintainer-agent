@@ -1,7 +1,8 @@
 //! Ports to the outside world, their fakes, and the one real adapter.
 //!
-//! Every program in magent talks to the world through six traits:
-//! [`Gh`], [`Git`], [`Containers`], [`Clock`], [`Fs`] and [`Proc`]. Decision
+//! Every program in magent talks to the world through seven traits:
+//! [`Gh`], [`Git`], [`Containers`], [`Clock`], [`Fs`], [`Proc`] and [`Pipe`]
+//! (a long program whose streams go to files). Decision
 //! code depends on the traits only, so a test replaces the world with a fake
 //! that records every call as a typed [`Effect`] in an [`EffectLog`].
 //!
@@ -33,6 +34,7 @@ mod effect;
 mod fs;
 mod gh;
 mod git;
+mod pipeline;
 mod proc;
 mod real_proc;
 mod script;
@@ -46,6 +48,9 @@ pub use effect::{Effect, EffectLog};
 pub use fs::{FakeFs, Fs, FsEffect, FsError};
 pub use gh::{CheckCounts, FakeGh, Gh, GhEffect, GhError, PrFacts};
 pub use git::{FakeGit, Git, GitEffect, GitError};
+pub use pipeline::{
+    FakePipe, Pipe, PipeEffect, PipelineOutcome, PipelineSpec, Sink, Source, StageSpec,
+};
 pub use proc::{FakeProc, Proc, ProcEffect, ProcError, ProcExit, ProcOutput, ProcSpec};
 pub use real_proc::RealProc;
 pub use script::Script;

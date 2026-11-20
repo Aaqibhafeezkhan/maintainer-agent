@@ -1,4 +1,6 @@
-use crate::{ClockEffect, ContainerEffect, FsEffect, GhEffect, GitEffect, ProcEffect, lock};
+use crate::{
+    ClockEffect, ContainerEffect, FsEffect, GhEffect, GitEffect, PipeEffect, ProcEffect, lock,
+};
 use std::sync::{Arc, Mutex};
 
 /// One recorded call to a port.
@@ -10,6 +12,7 @@ pub enum Effect {
     Clock(ClockEffect),
     Fs(FsEffect),
     Proc(ProcEffect),
+    Pipe(PipeEffect),
 }
 
 /// The calls made through the fakes, in order.
