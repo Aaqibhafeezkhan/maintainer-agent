@@ -9,7 +9,7 @@ matters most here.
 
 **Do not open a public issue.** Report it privately here:
 
-**<https://github.com/vladimirrott/maintainer-agent/security/advisories/new>**
+**<https://github.com/agentsmith-tools/maintainer-agent/security/advisories/new>**
 
 Private vulnerability reporting is enabled on this repository, so that link
 works for anyone with a GitHub account and the report is visible only to the

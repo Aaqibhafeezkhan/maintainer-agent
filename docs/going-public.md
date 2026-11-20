@@ -6,7 +6,7 @@ stays as the record of what was applied and how to reapply it.
 ## 1. Flip the visibility — done
 
 ```sh
-gh repo edit vladimirrott/maintainer-agent --visibility public --accept-visibility-change-consequences
+gh repo edit agentsmith-tools/maintainer-agent --visibility public --accept-visibility-change-consequences
 ```
 
 Read [the leak check's own scope](#4-what-the-leak-check-does-and-does-not-cover)
@@ -22,7 +22,7 @@ names in the file, because protection naming a check that never appears can
 never be satisfied:
 
 ```sh
-gh api -X PUT repos/vladimirrott/maintainer-agent/branches/main/protection --input - <<'JSON'
+gh api -X PUT repos/agentsmith-tools/maintainer-agent/branches/main/protection --input - <<'JSON'
 {
   "required_status_checks": {
     "strict": true,
@@ -50,7 +50,7 @@ person who can needs a way to land a fix when CI itself is broken.
 Confirmed still missing on 2026-09-04:
 
 ```sh
-$ gh api repos/vladimirrott/maintainer-agent --jq .open_graph_image_url
+$ gh api repos/agentsmith-tools/maintainer-agent --jq .open_graph_image_url
 null
 ```
 
@@ -90,7 +90,7 @@ Upgrading a **pending** invitation does not work through the collaborators
 endpoint, which returns the existing invitation unchanged. Patch the invitation:
 
 ```sh
-gh api -X PATCH repos/vladimirrott/maintainer-agent/invitations/<id> -f permissions=admin
+gh api -X PATCH repos/agentsmith-tools/maintainer-agent/invitations/<id> -f permissions=admin
 ```
 
 ## 6. Afterwards
