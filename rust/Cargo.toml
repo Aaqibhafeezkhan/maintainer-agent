@@ -29,6 +29,7 @@ signal-hook = "=0.3.18"
 mx-core = { path = "crates/mx-core" }
 mx-ports = { path = "crates/mx-ports" }
 mx-profile = { path = "crates/mx-profile" }
+mx-backends = { path = "crates/mx-backends" }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
