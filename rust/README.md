@@ -28,6 +28,15 @@ A binary's `main` deals with `SIGPIPE`, because Rust ignores it. Restoring the d
 
 The doctor writes each finding and each diagnostic the moment it is made, so a capture of both streams interleaves as the bash does. It cannot restore the default `SIGPIPE` action without `unsafe`, so when standard output is closed it stops at the next section and exits with status 141, which is what a shell reports for a process the signal killed.
 
+## mx-backends
+
+`crates/mx-backends` is `lib/backends/*.sh` in Rust. A backend answers the six questions of the bash file (its name, whether it can rehearse, where its rehearsal wall is, which tasks it may run, whether it can run, and what to run) and returns the last answer as a `RunPlan`: the programs, their arguments and environment, the file each reads and the log each appends to. It starts no process. The orchestrator runs the plan through the `Pipe` port. `backend_by_name` matches the four names exactly, so a name like `../x` finds nothing (plan decision D18). `RealHost` answers `command -v` and file questions from the machine, and `FakeHost` answers from a table and panics on a question nobody declared. Its tests are in `crates/mx-backends/tests/`:
+
+- `differential.sh`: for each backend, 40 or more hand-written and seeded scenarios run through the bash function in a child bash and through the Rust plan, both starting the same stubs. The sides must agree on every printed line, the exit status, both output streams, each stub call (argv, environment names, working directory, standard input) and the bytes of every file written. Differences that stay are named decisions and asserted on both sides.
+- `mutants.py`: the mutation table. Each mutant changes one line in a copy of the tree and must turn a named test red.
+
+The key for opencode goes to the opencode stage through its environment. No argument, export, log note or `Debug` print holds it.
+
 ## Running the bash suites against a Rust program
 
 `rust/scripts/assemble-tree.sh DEST [PROGRAM...]` copies the tree to `DEST`, builds each workspace binary whose name is also a file under `bin/` (today `maintainer-repo`), and puts a wrapper in its place that execs the binary with the wrapper's own path as `argv[0]`. The characterization suite then drives the Rust program:
