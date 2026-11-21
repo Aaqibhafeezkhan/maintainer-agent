@@ -273,14 +273,22 @@ fn opencode_falls_back_to_the_live_config_when_the_exported_wall_is_empty() {
 // --- the key -------------------------------------------------------------------------
 
 #[test]
-fn the_key_from_the_environment_goes_to_the_stage_and_wins_over_the_file() {
+fn a_key_in_the_environment_is_never_planned_and_the_key_file_is_not_read() {
+    // Decision P2B-10: the bash agent inherits an exported key, so the executor
+    // passes it on. The plan names a key only when this backend read it from the
+    // file. The fake panics on a path nobody declared, so a plan that looked at
+    // the key file here would fail.
     let ctx = with(model_ctx(), "GROQ_API_KEY", "key-from-env");
-    let plan =
-        backend("opencode").plan(&ctx, &keyed("key-from-file\n"), &request()).expect("a plan");
-    assert_eq!(
-        env(only_stage(&plan)),
-        [("OPENCODE_CONFIG", CONFIG), ("GROQ_API_KEY", "key-from-env")]
-    );
+    let plan = backend("opencode").plan(&ctx, &FakeHost::new(), &request()).expect("a plan");
+    assert_eq!(env(only_stage(&plan)), [("OPENCODE_CONFIG", CONFIG)]);
+    assert!(exports(&plan).is_empty());
+}
+
+#[test]
+fn a_key_of_whitespace_in_the_environment_is_a_key_and_the_file_is_not_read() {
+    let ctx = with(model_ctx(), "GROQ_API_KEY", " ");
+    let plan = backend("opencode").plan(&ctx, &FakeHost::new(), &request()).expect("a plan");
+    assert_eq!(env(only_stage(&plan)), [("OPENCODE_CONFIG", CONFIG)]);
 }
 
 #[test]
@@ -320,11 +328,11 @@ fn with_no_key_anywhere_no_key_variable_reaches_the_stage() {
 }
 
 #[test]
-fn an_empty_key_in_the_environment_with_no_file_reaches_the_stage_empty() {
+fn an_empty_key_in_the_environment_with_no_file_is_left_to_the_executor() {
     let ctx = with(model_ctx(), "GROQ_API_KEY", "");
     let host = FakeHost::new().without_file(KEY_FILE);
     let plan = backend("opencode").plan(&ctx, &host, &request()).expect("a plan");
-    assert_eq!(env(only_stage(&plan))[1], ("GROQ_API_KEY", ""));
+    assert!(env(only_stage(&plan)).iter().all(|(name, _)| *name != "GROQ_API_KEY"));
 }
 
 #[test]
@@ -361,13 +369,16 @@ fn a_key_file_that_is_not_utf8_refuses_without_printing_the_key() {
 
 #[test]
 fn the_key_is_in_no_argument_and_no_export() {
-    let ctx = with(model_ctx(), "GROQ_API_KEY", "gsk_supersecret_value");
-    let host = FakeHost::new().without_file(KEY_FILE);
-    let plan = backend("opencode").plan(&ctx, &host, &request()).expect("a plan");
+    // Decision P2B-7: the bash exports the key it read into the whole run, and
+    // the plan gives it to the opencode stage only.
+    let plan = backend("opencode")
+        .plan(&model_ctx(), &keyed("gsk_supersecret_value\n"), &request())
+        .expect("a plan");
+    assert_eq!(env(only_stage(&plan))[1], ("GROQ_API_KEY", "gsk_supersecret_value"));
     for stage in &plan.pipeline.stages {
         assert!(stage.argv.iter().all(|arg| !arg.contains("supersecret")));
     }
-    assert!(plan.exports.iter().all(|export| !export.value.contains("supersecret")));
+    assert!(plan.exports.is_empty());
 }
 
 #[test]
@@ -389,4 +400,42 @@ fn the_key_read_from_the_file_is_not_in_the_debug_print_of_the_plan() {
         .expect("a plan");
     assert_eq!(env(only_stage(&plan))[1].1, "gsk_filesecret_value");
     assert!(!format!("{plan:?}").contains("filesecret"));
+}
+
+// --- values made of whitespace are values (the shell's `${NAME:-}` tests for empty only) --
+
+#[test]
+fn an_opencode_model_of_whitespace_is_a_model() {
+    let mut req = request();
+    req.model = "sonnet".to_string();
+    let ctx = with(ctx(), "OPENCODE_MODEL", " ");
+    let host = FakeHost::new().without_file(KEY_FILE);
+    let plan = backend("opencode").plan(&ctx, &host, &req).expect("a plan");
+    assert_eq!(argv(only_stage(&plan))[3], " ");
+}
+
+#[test]
+fn an_opencode_model_of_a_tab_and_a_space_is_a_model() {
+    let ctx = with(ctx(), "OPENCODE_MODEL", "\t ");
+    let host = FakeHost::new().without_file(KEY_FILE);
+    let plan = backend("opencode").plan(&ctx, &host, &request()).expect("a plan");
+    assert_eq!(argv(only_stage(&plan))[3], "\t ");
+}
+
+#[test]
+fn a_maintainer_settings_of_whitespace_is_a_path() {
+    let host = FakeHost::new().with_program("opencode").without_file(" ");
+    let ctx = with(ctx(), "MAINTAINER_SETTINGS", " ");
+    assert_eq!(backend("opencode").check(&ctx, &host), Err("missing  ".to_string()));
+    let host = FakeHost::new().without_file(KEY_FILE);
+    let plan =
+        backend("opencode").plan(&with(model_ctx(), "MAINTAINER_SETTINGS", " "), &host, &request());
+    assert_eq!(env(only_stage(&plan.expect("a plan")))[0], ("OPENCODE_CONFIG", " "));
+}
+
+#[test]
+fn a_groq_api_key_of_whitespace_is_a_credential() {
+    let host = FakeHost::new().with_program("opencode").with_file(CONFIG, "{}");
+    let ctx = with(ctx(), "GROQ_API_KEY", " ");
+    assert_eq!(backend("opencode").check(&ctx, &host), Ok(()));
 }

@@ -16,8 +16,13 @@ use std::path::{Path, PathBuf};
 ///
 /// "Executable" means a regular file with an execute bit set for anyone. The
 /// shell asks the kernel whether the effective user may execute the file, and
-/// `std` has no safe way to ask that. The two differ only for a file that is
+/// `std` has no safe way to ask that. The two differ for a file that is
 /// executable for some other user and not for this one.
+///
+/// Bash 5.3 also reports a non-executable regular file, and a FIFO, as found when
+/// no executable file of that name exists in the path. Here neither is a program,
+/// so `check` refuses a run that the bash would have started and failed with 126
+/// (decision P2B-9). That is the safe side of the difference.
 #[derive(Debug, Clone)]
 pub struct RealHost {
     dirs: Vec<PathBuf>,

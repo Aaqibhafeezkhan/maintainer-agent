@@ -18,7 +18,9 @@ The pristine copy runs before the batch and after it (the same test count, no
 failure), and the hash of every source file of the checkout is compared before
 and after. The copy holds rust/ and lib/backends, which the differential reads.
 
-Environment: MX_SCRATCH (default ~/.cache/magent-wt-scratch), CARGO_BUILD_JOBS.
+Environment: MX_SCRATCH (default ~/.cache/magent-wt-scratch), CARGO_BUILD_JOBS,
+MUT_CARGO_ARGS (extra cargo test arguments, for example `--test differential`),
+MUT_MIN_PASSED (the test count the pristine control must reach; default 150).
 """
 
 import hashlib
@@ -142,7 +144,8 @@ MUTANTS = [
      "auth.json is not a credential"),
     ("M62", S + "opencode.rs", 'if nonempty(ctx, "GROQ_API_KEY").is_none()', 'if ctx.var("GROQ_API_KEY").is_none()',
      "an empty key counts as a credential"),
-    ("M63", S + "opencode.rs", "key.as_deref().is_none_or(str::is_empty)", "key.is_none()", "an empty environment key is not replaced by the file"),
+    ("M63", S + "opencode.rs", 'ctx.var("GROQ_API_KEY").is_none_or(str::is_empty)', 'ctx.var("GROQ_API_KEY").is_none()',
+     "an empty environment key is not replaced by the file"),
     ("M64", S + "opencode.rs", '("GROQ_API_KEY".to_string(), key)', '("GROQ_KEY".to_string(), key)', "wrong variable name for the key"),
     ("M65", S + "opencode.rs", '("OPENCODE_CONFIG".to_string()', '("OPENCODE_CONFIGS".to_string()', "wrong variable name for the config"),
     ("M66", S + "opencode.rs", 'dir_file(&ctx.profile_dir, "opencode-rehearsal.json")', 'dir_file(&ctx.profile_dir, "opencode-rehearsal.jso")',
@@ -154,7 +157,7 @@ MUTANTS = [
     ("M71", S + "opencode.rs", "no Groq credential: set GROQ_API_KEY", "no Groq credential: set GROQ_KEY", "the check message"),
     ("M72", S + "opencode.rs", "fn declares_rehearsal(&self) -> bool {\n        true", "fn declares_rehearsal(&self) -> bool {\n        false",
      "opencode declares no rehearsal"),
-    ("M73", S + "opencode.rs", "            argv.push(model);\n", "            argv.push(model);\n            if let Some(k) = &key {\n                argv.push(k.clone());\n            }\n",
+    ("M73", S + "opencode.rs", "            argv.push(model);\n", "            argv.push(model);\n            if let Some(k) = &key_from_file {\n                argv.push(k.clone());\n            }\n",
      "the key is passed in argv"),
     ("M74", S + "opencode.rs", "Err(PlanRefusal {\n                log_note: \"OPENCODE_MODEL: lib/defaults.env was not loaded\".to_string(),",
      "Err(PlanRefusal {\n                log_note: \"OPENCODE_MODEL is unset\".to_string(),", "the refusal text"),
@@ -186,6 +189,42 @@ MUTANTS = [
      "a directory is a file"),
     ("M90", S + "claude.rs", "let filter_present = host.is_file(&filter);", "let filter_present = !host.is_file(&filter);",
      "the filter test is inverted"),
+    # --- from the review of #263: mutants its scenarios killed and these tests did not -----
+    ("M91", S + "cursor.rs", "while bytes.last() == Some(&b'\\n') {", "while matches!(bytes.last(), Some(b'\\n' | b'\\r')) {",
+     "a trailing CR is cut with the newlines"),
+    ("M92", S + "util.rs", ".filter(|value| !value.is_empty())", ".filter(|value| !value.trim().is_empty())",
+     "a variable set to whitespace reads as unset"),
+    ("M93", S + "host.rs", "std::fs::metadata(path).ok().map(|meta| meta.len())", "std::fs::symlink_metadata(path).ok().map(|meta| meta.len())",
+     "the length of a symlinked prompt is the length of the link"),
+    ("M94", S + "util.rs", "path.to_str().map(str::to_string).ok_or_else(|| PlanRefusal {",
+     "Some(path.to_string_lossy().into_owned()).ok_or_else(|| PlanRefusal {", "a path that is not UTF-8 is passed lossy"),
+    ("M95", S + "claude.rs", "value: wall.to_str()?.to_string()", "value: wall.to_string_lossy().into_owned()",
+     "a wall path that is not UTF-8 is exported lossy"),
+    ("M96", S + "opencode.rs", 'nonempty(ctx, "OPENCODE_MODEL")', 'ctx.var("OPENCODE_MODEL").filter(|v| !v.trim().is_empty())',
+     "an OPENCODE_MODEL of whitespace reads as unset"),
+    ("M97", S + "codex.rs", "let agent = to_log(stage(argv, ctx), Some(&request.prompt_file), &request.log);",
+     'let mut agent = to_log(stage(argv, ctx), Some(&request.prompt_file), &request.log);\n        agent.env.push(("EVIL_EXTRA".to_string(), "1".to_string()));',
+     "the stage gains a variable no stub logs"),
+    ("M98", S + "util.rs", "stage.stderr = Sink::SameAsStdout;", "stage.stderr = Sink::AppendFile(log.to_path_buf());",
+     "2>&1 becomes a second append to the log"),
+    ("M99", S + "claude.rs", "agent.env = exports.iter().map(|e| (e.name.clone(), e.value.clone())).collect();",
+     'agent.env = exports.iter().map(|e| (e.name.clone(), e.value.clone())).collect();\n        agent.env.push(("HOME".to_string(), "/root".to_string()));',
+     "HOME is added to the stage environment"),
+    ("M100", S + "opencode.rs", ["if let Some(key) = key_from_file {", "exports: Vec::new(),"],
+     ["if let Some(key) = key_from_file.clone() {",
+      'exports: key_from_file.iter().map(|k| Export { name: "GROQ_API_KEY".to_string(), value: k.clone() }).collect(),'],
+     "the key is also exported to the whole run"),
+    # --- from the follow-up to the review: the key is planned only when the backend read it --
+    ("M101", S + "opencode.rs", 'ctx.var("GROQ_API_KEY").is_none_or(str::is_empty)', "true",
+     "the key file is read although the environment holds a key"),
+    ("M102", S + "opencode.rs", "if let Some(key) = key_from_file {",
+     'if let Some(key) = key_from_file.or_else(|| ctx.var("GROQ_API_KEY").map(str::to_string)) {',
+     "a key from the environment is named in the plan"),
+    ("M103", S + "cursor.rs", "bytes.retain(|byte| *byte != 0);", "bytes.retain(|byte| *byte != 0 && *byte != b'\\r');",
+     "every CR is cut from the prompt"),
+    ("M104", S + "util.rs", "stage.cwd = Some(ctx.repo_path.clone());", "stage.cwd = Some(PathBuf::from(shown(&ctx.repo_path)));",
+     "the working directory is a lossy copy of the checkout path"),
+    ("M105", S + "claude.rs", '"python3".to_string(),', '"python".to_string(),', "the filter runs under another program name"),
 ]
 
 LIMIT_BYTES = 24 << 30  # address space of one cargo run; rustc maps a lot, so this is generous
@@ -230,7 +269,7 @@ def cargo_test(copy, target, timeout):
     env.pop("DIFF_SEED", None)
     env.pop("MX_TREE", None)
     try:
-        cp = subprocess.run(["cargo", "test", "-p", "mx-backends", "--locked", "--offline", "--no-fail-fast"], cwd=copy / "rust", env=env,
+        cp = subprocess.run(["cargo", "test", "-p", "mx-backends", "--locked", "--offline", "--no-fail-fast"] + os.environ.get("MUT_CARGO_ARGS", "").split(), cwd=copy / "rust", env=env,
                             capture_output=True, text=True, timeout=timeout, preexec_fn=limits)
     except subprocess.TimeoutExpired as error:
         return "TIMEOUT", [], 0, 0, str(error.stdout or "")
@@ -248,15 +287,22 @@ def cargo_test(copy, target, timeout):
 
 
 def apply(work, rel, old, new, mid):
+    """old and new are strings, or lists of strings of one length (several edits to one file)."""
+    olds = old if isinstance(old, list) else [old]
+    news = new if isinstance(new, list) else [new]
+    assert len(olds) == len(news), "%s: old and new differ in length" % mid
     path = work / "rust" / rel
     text = path.read_text()
-    if text.count(old) != 1:
-        sys.exit("mutants: %s: the old text occurs %d times in %s" % (mid, text.count(old), rel))
+    for one in olds:
+        if text.count(one) != 1:
+            sys.exit("mutants: %s: the old text occurs %d times in %s: %r" % (mid, text.count(one), rel, one))
     before_hash = sha(path)
     assert sha(RUST / rel) == before_hash, "the copy differs from the checkout before the edit"
-    path.write_text(text.replace(old, new))
+    for one, other in zip(olds, news):
+        text = text.replace(one, other)
+    path.write_text(text)
     back = path.read_text()
-    if new not in back or sha(path) == before_hash:
+    if any(other not in back for other in news) or sha(path) == before_hash:
         sys.exit("mutants: %s: the edit did not land" % mid)
 
 
@@ -288,7 +334,7 @@ def main():
         touch_all(work)
         status, names, passed, failed, out = cargo_test(work, target, 1800)
         print("control %-6s %s: %d passed, %d failed" % (label, status, passed, failed), flush=True)
-        if status != "GREEN" or passed < 150:
+        if status != "GREEN" or passed < int(os.environ.get("MUT_MIN_PASSED", "150")):
             print(out[-3000:])
             sys.exit("mutants: the pristine control is not green with the full suite")
         return passed

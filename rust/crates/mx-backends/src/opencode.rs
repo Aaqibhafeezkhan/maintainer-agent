@@ -76,18 +76,21 @@ impl Backend for Opencode {
             });
         };
 
-        // The key from the environment wins. An unset or empty one is replaced
-        // by the key file with every newline deleted (`tr -d '\n'`). A file that
-        // exists and cannot be read leaves the variable as it was.
-        let mut key: Option<String> = ctx.var("GROQ_API_KEY").map(str::to_string);
+        // A key in the environment is the executor's to pass on, as the bash agent
+        // inherits it, so the plan never names it (decision P2B-10). The plan
+        // names the key only when this backend read it from the key file, the case
+        // where the bash runs `export GROQ_API_KEY`: the environment holds no key
+        // or an empty one, and the file exists. The file is read with every newline
+        // deleted (`tr -d '\n'`). A file that exists and cannot be read adds nothing.
+        let mut key_from_file: Option<String> = None;
         let key_file = Self::key_file(ctx);
-        if key.as_deref().is_none_or(str::is_empty)
+        if ctx.var("GROQ_API_KEY").is_none_or(str::is_empty)
             && host.is_file(&key_file)
             && let Some(mut bytes) = host.read(&key_file)
         {
             // The shell drops NUL bytes from a command substitution.
             bytes.retain(|byte| *byte != b'\n' && *byte != 0);
-            key = Some(String::from_utf8(bytes).map_err(|_| PlanRefusal {
+            key_from_file = Some(String::from_utf8(bytes).map_err(|_| PlanRefusal {
                 log_note: "the Groq key file is not valid UTF-8".to_string(),
             })?);
         }
@@ -104,7 +107,7 @@ impl Backend for Opencode {
         agent.env.push(("OPENCODE_CONFIG".to_string(), text(&settings_or(ctx, "opencode.json"))?));
         // The key goes to this stage only, through the environment. It is in no
         // argument and no export, and `StageSpec`'s `Debug` prints names only.
-        if let Some(key) = key {
+        if let Some(key) = key_from_file {
             agent.env.push(("GROQ_API_KEY".to_string(), key));
         }
         Ok(RunPlan {

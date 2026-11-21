@@ -189,3 +189,23 @@ fn the_fake_answers_a_declared_absent_path_and_a_declared_unreadable_one() {
     assert_eq!(host.file_len(Path::new("/locked")), None);
     assert_eq!(host.read(Path::new("/locked")), None);
 }
+
+#[test]
+fn the_length_of_a_symlinked_file_is_the_length_of_its_target() {
+    // `wc -c < link` follows the link, and so must the size check on a prompt.
+    let dir = scratch("len-link");
+    let real = dir.join("real");
+    fs::write(&real, vec![b'x'; 131_072]).expect("a file");
+    symlink(&real, dir.join("link")).expect("a symlink");
+    let host = RealHost::new(&path_of(&[&dir]));
+    assert_eq!(host.file_len(&dir.join("link")), Some(131_072));
+    assert_eq!(host.read(&dir.join("link")).map(|bytes| bytes.len()), Some(131_072));
+}
+
+#[test]
+fn the_length_of_a_dangling_link_is_nothing() {
+    let dir = scratch("len-dangling");
+    symlink(dir.join("nowhere"), dir.join("link")).expect("a symlink");
+    let host = RealHost::new(&path_of(&[&dir]));
+    assert_eq!(host.file_len(&dir.join("link")), None);
+}

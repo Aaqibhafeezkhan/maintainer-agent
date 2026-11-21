@@ -25,8 +25,10 @@
 use mx_backends::{Backend, BackendCtx, Export, RealHost, RunPlan, RunRequest, backend_by_name};
 use mx_ports::{Proc, ProcExit, ProcOutput, ProcSpec, RealProc, Sink, Source, StageSpec};
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsStr;
 use std::fmt::Write as _;
 use std::fs;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{PermissionsExt, symlink};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -36,8 +38,12 @@ use std::time::Duration;
 const FLOOR: usize = 40;
 const DEFAULT_SEED: u64 = 20_261_120;
 const RANDOM_PER_BACKEND: usize = 48;
-const SYSTEM_TOOLS: [&str; 7] = ["bash", "cat", "sha256sum", "wc", "rm", "tr", "env"];
+const SYSTEM_TOOLS: [&str; 8] = ["bash", "cat", "sha256sum", "wc", "rm", "tr", "env", "sort"];
 const OPENCODE_DEFAULT_MODEL: &str = "groq/openai/gpt-oss-120b";
+/// What the run exports for every child before a backend is asked: the wall
+/// variables the backends name, and the key the run inherited. The executor passes
+/// them; a plan names none of them (decisions P2B-7 and P2B-10).
+const RUN_EXPORTED: [&str; 3] = ["MAINTAINER_SETTINGS", "MAINTAINER_CURSOR_DIR", "GROQ_API_KEY"];
 
 // --- the scenario --------------------------------------------------------------------
 
@@ -68,6 +74,14 @@ enum Divergence {
     /// (`${!THINKING_<task>}`); the port looks the name up and finds nothing.
     /// `lib/run.sh` dies earlier on the same name (plan decision F7).
     TaskNotAName,
+    /// P2B-2 and P2B-5: a NUL byte in the cursor prompt or in the opencode key file
+    /// makes the shell warn on standard error (`ignored null byte in input`); the
+    /// port drops the byte as the shell does and says nothing.
+    NulWarning,
+    /// P2B-12: a checkout path that is not UTF-8 is an argument of the codex plan,
+    /// so the port refuses where the bash runs. Every other backend only runs in
+    /// that directory, and the differential shows they agree with the bash.
+    NonUtf8Path,
 }
 
 #[derive(Clone, Debug)]
@@ -79,6 +93,9 @@ struct Sc {
     prompt: Vec<u8>,
     profile_name: String,
     repo_name: String,
+    /// A checkout directory name that is not UTF-8, in place of `repo_name`.
+    repo_raw: Option<Vec<u8>>,
+    prompt_symlink: bool,
     home_name: String,
     log_rel: String,
     prior_log: Vec<u8>,
@@ -138,6 +155,8 @@ impl Sc {
             prompt: b"the prompt text\nsecond line\n".to_vec(),
             profile_name: "profile".to_string(),
             repo_name: "repo".to_string(),
+            repo_raw: None,
+            prompt_symlink: false,
             home_name: "home".to_string(),
             log_rel: "logs/run.log".to_string(),
             prior_log: b"PRIOR\n".to_vec(),
@@ -174,6 +193,14 @@ impl Sc {
     }
     fn repo(mut self, name: &str) -> Self {
         self.repo_name = name.to_string();
+        self
+    }
+    fn repo_raw(mut self, bytes: &[u8]) -> Self {
+        self.repo_raw = Some(bytes.to_vec());
+        self
+    }
+    fn prompt_symlink(mut self) -> Self {
+        self.prompt_symlink = true;
         self
     }
     fn home(mut self, name: &str) -> Self {
@@ -245,6 +272,15 @@ impl Sc {
 
     /// Marks the scenarios whose difference is a named decision.
     fn finalize(mut self) -> Self {
+        let key_nul = self.backend == "opencode"
+            && self.key_file.as_ref().is_some_and(|key| key.contains(&0))
+            && !self.key_unreadable
+            && self.vars.get("GROQ_API_KEY").is_none_or(String::is_empty);
+        let prompt_nul =
+            self.backend == "cursor" && self.prompt.contains(&0) && self.prompt.len() < 131_072;
+        if key_nul || prompt_nul {
+            self.divergence = Some(Divergence::NulWarning);
+        }
         let opencode_model_missing = self.backend == "opencode"
             && !self.model.contains('/')
             && self.vars.get("OPENCODE_MODEL").is_none_or(String::is_empty);
@@ -253,6 +289,9 @@ impl Sc {
         }
         if self.backend == "claude" && self.task.contains('-') {
             self.divergence = Some(Divergence::TaskNotAName);
+        }
+        if self.backend == "codex" && self.repo_raw.is_some() {
+            self.divergence = Some(Divergence::NonUtf8Path);
         }
         self
     }
@@ -283,7 +322,9 @@ impl World {
             bin: root.join("bin"),
             sys: root.join("sys"),
             profile: root.join(&sc.profile_name),
-            repo: state.join(&sc.repo_name),
+            repo: state.join(
+                sc.repo_raw.as_deref().map_or_else(|| OsStr::new(&sc.repo_name), OsStr::from_bytes),
+            ),
             home: root.join(&sc.home_name),
             scripts: root.join("tree/scripts"),
             prompt: state.join("prompt.txt"),
@@ -374,7 +415,13 @@ fn build(sc: &Sc, w: &World) {
         }
     }
     fs::create_dir_all(&w.repo).expect("the checkout");
-    fs::write(&w.prompt, &sc.prompt).expect("the prompt");
+    if sc.prompt_symlink {
+        let real = w.state.join("prompt.real");
+        fs::write(&real, &sc.prompt).expect("the prompt");
+        symlink(&real, &w.prompt).expect("the prompt link");
+    } else {
+        fs::write(&w.prompt, &sc.prompt).expect("the prompt");
+    }
     fs::create_dir_all(w.log.parent().expect("a parent")).expect("the log directory");
     fs::write(&w.log, &sc.prior_log).expect("the log");
 }
@@ -459,27 +506,39 @@ fn bash_side(sc: &Sc, w: &World) -> Obs {
     let file = tree_root().join("lib/backends").join(format!("{}.sh", sc.backend));
     assert!(file.is_file(), "no backend file at {}", file.display());
     let rc_file = w.ctl.join("bash.rc");
+    let exports_file = w.ctl.join("bash.exports");
     let mut obs = Obs::default();
 
     let env_for = |wall: bool| {
+        // Every input goes in as DRV_<NAME>; driver.sh exports only the three names
+        // the run exports for every child and keeps the rest as shell variables.
         let mut env: Vec<(String, String)> = vec![
-            ("HOME".into(), path_str(&w.home)),
-            ("PROFILE_DIR".into(), path_str(&w.profile)),
-            ("REPO_PATH".into(), path_str(&w.repo)),
-            ("MAINTAINER_TASK".into(), sc.task.clone()),
+            ("DRV_HOME".into(), path_str(&w.home)),
+            ("DRV_PROFILE_DIR".into(), path_str(&w.profile)),
+            ("DRV_MAINTAINER_TASK".into(), sc.task.clone()),
         ];
+        if let Some(raw) = &sc.repo_raw {
+            let mut escaped = String::new();
+            for byte in raw {
+                let _ = write!(escaped, "\\{byte:03o}");
+            }
+            env.push(("DRV_REPO_PARENT".into(), path_str(&w.state)));
+            env.push(("DRV_REPO_NAME_ESC".into(), escaped));
+        } else {
+            env.push(("DRV_REPO_PATH".into(), path_str(&w.repo)));
+        }
         match sc.scripts {
             Scripts::NoDir => {}
-            Scripts::Empty => env.push(("MAINTAINER_SCRIPTS".into(), String::new())),
+            Scripts::Empty => env.push(("DRV_MAINTAINER_SCRIPTS".into(), String::new())),
             Scripts::WithFilter | Scripts::WithoutFilter => {
-                env.push(("MAINTAINER_SCRIPTS".into(), path_str(&w.scripts)));
+                env.push(("DRV_MAINTAINER_SCRIPTS".into(), path_str(&w.scripts)));
             }
         }
         for (name, value) in &sc.vars {
             if wall && (name == "MAINTAINER_SETTINGS" || name == "MAINTAINER_CURSOR_DIR") {
                 continue;
             }
-            env.push((name.clone(), w.subst(value)));
+            env.push((format!("DRV_{name}"), w.subst(value)));
         }
         env
     };
@@ -508,8 +567,10 @@ fn bash_side(sc: &Sc, w: &World) -> Obs {
         path_str(&w.log),
         path_str(&w.state),
         path_str(&rc_file),
+        path_str(&exports_file),
     ];
     let _ = fs::remove_file(&rc_file);
+    let _ = fs::remove_file(&exports_file);
     let out = call("run", false, &args);
     obs.fields.insert("run.exit".into(), exit_text(out.exit));
     obs.fields.insert("run.stdout".into(), lossy(&out.stdout));
@@ -518,6 +579,10 @@ fn bash_side(sc: &Sc, w: &World) -> Obs {
         "run.rc".into(),
         fs::read_to_string(&rc_file)
             .map_or_else(|_| "<none>".to_string(), |t| t.trim().to_string()),
+    );
+    obs.fields.insert(
+        "run.exports".into(),
+        fs::read_to_string(&exports_file).unwrap_or_else(|_| "<none>".to_string()),
     );
     obs.tree = snapshot(w);
     obs
@@ -537,69 +602,106 @@ fn runnable(sc: &Sc) -> bool {
         && (sc.backend != "claude" || sc.scripts != Scripts::WithFilter || installed("python3"))
 }
 
-fn shq(text: &str) -> String {
-    format!("'{}'", text.replace('\'', r"'\''"))
+/// One name per line, each ended by a newline: the shape of the bash export list.
+fn name_lines<'a>(names: impl IntoIterator<Item = &'a str>) -> String {
+    let mut out = String::new();
+    for name in names {
+        out.push_str(name);
+        out.push('\n');
+    }
+    out
 }
 
-fn redirect(stage: &StageSpec) -> String {
-    let mut out = String::new();
+fn quote(bytes: &[u8]) -> Vec<u8> {
+    let mut out = vec![b'\''];
+    for &byte in bytes {
+        if byte == b'\'' {
+            out.extend_from_slice(b"'\\''");
+        } else {
+            out.push(byte);
+        }
+    }
+    out.push(b'\'');
+    out
+}
+
+fn quote_path(path: &Path) -> Vec<u8> {
+    quote(path.as_os_str().as_bytes())
+}
+
+fn redirect(stage: &StageSpec) -> Vec<u8> {
+    let mut out = Vec::new();
     match &stage.stdin {
-        Source::Empty => out.push_str(" </dev/null"),
+        Source::Empty => out.extend_from_slice(b" </dev/null"),
         Source::File(path) => {
-            let _ = write!(out, " <{}", shq(&path_str(path)));
+            out.extend_from_slice(b" <");
+            out.extend(quote_path(path));
         }
         Source::PreviousStage => {}
     }
     match &stage.stdout {
-        Sink::Null => out.push_str(" >/dev/null"),
+        Sink::Null => out.extend_from_slice(b" >/dev/null"),
         Sink::AppendFile(path) => {
-            let _ = write!(out, " >>{}", shq(&path_str(path)));
+            out.extend_from_slice(b" >>");
+            out.extend(quote_path(path));
         }
         Sink::NextStage => {}
         Sink::SameAsStdout => panic!("stdout cannot be the same as stdout"),
     }
     match &stage.stderr {
-        Sink::Null => out.push_str(" 2>/dev/null"),
+        Sink::Null => out.extend_from_slice(b" 2>/dev/null"),
         Sink::AppendFile(path) => {
-            let _ = write!(out, " 2>>{}", shq(&path_str(path)));
+            out.extend_from_slice(b" 2>>");
+            out.extend(quote_path(path));
         }
-        Sink::SameAsStdout => out.push_str(" 2>&1"),
+        Sink::SameAsStdout => out.extend_from_slice(b" 2>&1"),
         Sink::NextStage => panic!("stderr cannot go to the next stage"),
     }
     out
 }
 
-/// The orchestrator stand-in: a `RunPlan` as a bash pipeline. Every stage starts
-/// with an empty environment plus `PATH`, `LC_ALL=C`, what the run exported and
-/// what the stage names, the way the real adapter starts it.
-fn render(plan: &RunPlan, log: &Path, run_env: &[(String, String)], rc_file: &Path) -> String {
-    let mut script = String::from("set -uo pipefail\n");
-    script.push_str("export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n");
+/// The orchestrator stand-in: a `RunPlan` as a bash pipeline, as bytes because a
+/// path need not be UTF-8. Every stage starts with an empty environment plus
+/// `PATH`, `LC_ALL=C`, what the run exported and what the stage names, the way the
+/// real adapter starts it.
+fn render(plan: &RunPlan, log: &Path, run_env: &[(String, String)], rc_file: &Path) -> Vec<u8> {
+    let mut script = b"set -uo pipefail\n".to_vec();
+    script.extend_from_slice(b"export PATH=\"$HOME/.local/bin:$HOME/.cargo/bin:$PATH\"\n");
     for note in &plan.log_notes {
-        let _ = writeln!(script, "printf '%s\\n' {} >>{}", shq(note), shq(&path_str(log)));
+        script.extend_from_slice(b"printf '%s\\n' ");
+        script.extend(quote(note.as_bytes()));
+        script.extend_from_slice(b" >>");
+        script.extend(quote_path(log));
+        script.push(b'\n');
     }
-    let mut stages = Vec::new();
+    let mut stages: Vec<Vec<u8>> = Vec::new();
     for stage in &plan.pipeline.stages {
-        let mut text = String::from("( ");
+        let mut text = b"( ".to_vec();
         if let Some(cwd) = &stage.cwd {
-            let _ = write!(text, "cd {} && ", shq(&path_str(cwd)));
+            text.extend_from_slice(b"cd ");
+            text.extend(quote_path(cwd));
+            text.extend_from_slice(b" && ");
         }
-        text.push_str("exec env -i PATH=\"$PATH\" LC_ALL=C");
+        text.extend_from_slice(b"exec env -i PATH=\"$PATH\" LC_ALL=C");
         let exported = plan.exports.iter().map(|e| (e.name.clone(), e.value.clone()));
         for (name, value) in
             run_env.iter().cloned().chain(exported).chain(stage.env.iter().cloned())
         {
-            let _ = write!(text, " {}", shq(&format!("{name}={value}")));
+            text.push(b' ');
+            text.extend(quote(format!("{name}={value}").as_bytes()));
         }
         for arg in &stage.argv {
-            let _ = write!(text, " {}", shq(arg));
+            text.push(b' ');
+            text.extend(quote(arg.as_bytes()));
         }
-        text.push_str(&redirect(stage));
-        text.push_str(" )");
+        text.extend(redirect(stage));
+        text.extend_from_slice(b" )");
         stages.push(text);
     }
-    let _ = writeln!(script, "{}", stages.join(" | "));
-    let _ = writeln!(script, "rc=$?\nprintf '%s\\n' \"$rc\" >{}", shq(&path_str(rc_file)));
+    script.extend(stages.join(&b" | "[..]));
+    script.extend_from_slice(b"\nrc=$?\nprintf '%s\\n' \"$rc\" >");
+    script.extend(quote_path(rc_file));
+    script.push(b'\n');
     script
 }
 
@@ -621,6 +723,7 @@ fn context(sc: &Sc, w: &World) -> BackendCtx {
 type Mutator<'a> = Option<&'a dyn Fn(&mut RunPlan)>;
 
 /// What the port does for the same four operations.
+#[allow(clippy::too_many_lines, reason = "the four operations read top to bottom")]
 fn rust_side(sc: &Sc, w: &World, mutate: Mutator<'_>) -> Obs {
     build(sc, w);
     let proc = proc_for(w);
@@ -682,27 +785,36 @@ fn rust_side(sc: &Sc, w: &World, mutate: Mutator<'_>) -> Obs {
     };
     let rc_file = w.ctl.join("rust.rc");
     let _ = fs::remove_file(&rc_file);
-    // The executor passes what the run exported before the backend was asked.
+    // The executor passes what the run exported, and a key the run inherited,
+    // before the backend is asked (decisions P2B-7, P2B-10).
     let run_env: Vec<(String, String)> = ctx
         .vars
         .iter()
-        .filter(|(name, _)| *name == "MAINTAINER_SETTINGS" || *name == "MAINTAINER_CURSOR_DIR")
+        .filter(|(name, _)| RUN_EXPORTED.contains(&name.as_str()))
         .map(|(k, v)| (k.clone(), v.clone()))
         .collect();
+    let mut exported_names: Vec<String> = Vec::new();
     let script = match backend.plan(&ctx, &host, &request) {
         Ok(mut plan) => {
             if let Some(mutate) = mutate {
                 mutate(&mut plan);
             }
+            exported_names = plan.exports.iter().map(|e| e.name.clone()).collect();
             render(&plan, &w.log, &run_env, &rc_file)
         }
-        Err(refusal) => format!(
-            "printf '%s\\n' {} >>{}\nprintf '1\\n' >{}\n",
-            shq(&refusal.log_note),
-            shq(&path_str(&w.log)),
-            shq(&path_str(&rc_file))
-        ),
+        Err(refusal) => {
+            let mut script = b"printf '%s\n' ".to_vec();
+            script.extend(quote(refusal.log_note.as_bytes()));
+            script.extend_from_slice(b" >>");
+            script.extend(quote_path(&w.log));
+            script.extend_from_slice(b"\nprintf '1\\n' >");
+            script.extend(quote_path(&rc_file));
+            script.push(b'\n');
+            script
+        }
     };
+    exported_names.sort();
+    obs.fields.insert("run.exports".into(), name_lines(exported_names.iter().map(String::as_str)));
     let script_file = w.ctl.join("exec.sh");
     fs::write(&script_file, script).expect("the script");
     let mut spec = ProcSpec::command("bash", [path_str(&script_file)], TIMEOUT).cwd(&w.root);
@@ -727,12 +839,26 @@ fn preview(bytes: &[u8]) -> String {
     if text.len() > 300 { format!("{}... ({} bytes)", &text[..300], text.len()) } else { text }
 }
 
+/// The first line of `text` that differs from the same line of `other`, so a long
+/// file that differs in its last record shows that record.
+fn first_difference(text: &[u8], other: &[u8]) -> String {
+    let (a, b) = (lossy(text), lossy(other));
+    let mut theirs = b.lines();
+    for line in a.lines() {
+        if theirs.next() != Some(line) {
+            return line.chars().take(300).collect();
+        }
+    }
+    format!("(the same lines; {} bytes against {})", text.len(), other.len())
+}
+
 fn log_key(w: &World) -> String {
     w.log.strip_prefix(&w.root).expect("the log is under the root").to_string_lossy().into_owned()
 }
 
 /// Asserts the pinned difference on both sides, then makes the two sides equal
 /// for the fields it explains. A failed assertion is a difference.
+#[allow(clippy::too_many_lines, reason = "one arm per named difference")]
 fn apply_divergence(sc: &Sc, w: &World, bash: &mut Obs, rust: &mut Obs, diffs: &mut Vec<String>) {
     let Some(kind) = sc.divergence else { return };
     if !runnable(sc) {
@@ -760,7 +886,7 @@ fn apply_divergence(sc: &Sc, w: &World, bash: &mut Obs, rust: &mut Obs, diffs: &
             expect(rust.tree.get(&log) == Some(&want), "the port should log the refusal");
             expect(rust.fields["run.rc"] == "1", "the port should fail the backend");
             expect(!rust.tree.contains_key("bin/calls.log"), "the port started no program");
-            for key in ["run.exit", "run.rc", "run.stderr"] {
+            for key in ["run.exit", "run.rc", "run.stderr", "run.exports"] {
                 let value = bash.fields[key].clone();
                 rust.fields.insert(key.to_string(), value);
             }
@@ -805,11 +931,34 @@ fn apply_divergence(sc: &Sc, w: &World, bash: &mut Obs, rust: &mut Obs, diffs: &
                 rust.tree.contains_key("bin/calls.log"),
                 "the port plans the run and starts the agent",
             );
-            for key in ["run.exit", "run.rc", "run.stdout", "run.stderr"] {
+            for key in ["run.exit", "run.rc", "run.stdout", "run.stderr", "run.exports"] {
                 let value = bash.fields[key].clone();
                 rust.fields.insert(key.to_string(), value);
             }
             rust.tree = bash.tree.clone();
+        }
+        Divergence::NonUtf8Path => {
+            expect(
+                bash.tree.contains_key("bin/calls.log"),
+                "the bash runs codex in a checkout path that is not UTF-8",
+            );
+            let note = rust.tree.get(&log).map(|bytes| lossy(bytes)).unwrap_or_default();
+            expect(note.contains("not valid UTF-8"), "the port logs why it refused the path");
+            expect(rust.fields["run.rc"] == "1", "the port fails the backend");
+            expect(!rust.tree.contains_key("bin/calls.log"), "the port started no program");
+            for key in ["run.exit", "run.rc", "run.stdout", "run.stderr", "run.exports"] {
+                let value = bash.fields[key].clone();
+                rust.fields.insert(key.to_string(), value);
+            }
+            rust.tree = bash.tree.clone();
+        }
+        Divergence::NulWarning => {
+            expect(
+                bash.fields["run.stderr"].contains("ignored null byte in input"),
+                "the bash should warn about the NUL byte",
+            );
+            expect(rust.fields["run.stderr"].is_empty(), "the port drops the NUL byte silently");
+            bash.fields.insert("run.stderr".into(), String::new());
         }
         Divergence::UnreadableKey => {
             expect(
@@ -825,8 +974,34 @@ fn apply_divergence(sc: &Sc, w: &World, bash: &mut Obs, rust: &mut Obs, diffs: &
     }
 }
 
+/// True when the opencode backend reads the key from the key file: no key or an
+/// empty one in the environment, and a key file that can be read.
+fn reads_key_file(sc: &Sc) -> bool {
+    sc.backend == "opencode"
+        && sc.key_file.is_some()
+        && !sc.key_unreadable
+        && sc.vars.get("GROQ_API_KEY").is_none_or(String::is_empty)
+}
+
+/// P2B-7: the bash exports `GROQ_API_KEY` into the whole run after it reads the key
+/// file, and the port gives the key to the opencode stage only. Assert that the
+/// bash exported it only in that case, then drop it from the bash side so the
+/// remaining names are compared.
+fn normalise_key_export(sc: &Sc, bash: &mut Obs, diffs: &mut Vec<String>) {
+    let Some(text) = bash.fields.get_mut("run.exports") else { return };
+    if !text.lines().any(|name| name == "GROQ_API_KEY") {
+        return;
+    }
+    if !reads_key_file(sc) {
+        diffs.push("P2B-7: the bash exported a key it did not read from the key file".to_string());
+    }
+    let kept = name_lines(text.lines().filter(|name| *name != "GROQ_API_KEY"));
+    *text = kept;
+}
+
 fn compare(sc: &Sc, w: &World, mut bash: Obs, mut rust: Obs) -> (usize, Vec<String>) {
     let mut diffs = Vec::new();
+    normalise_key_export(sc, &mut bash, &mut diffs);
     apply_divergence(sc, w, &mut bash, &mut rust, &mut diffs);
     let mut compared = 0;
     let keys: BTreeSet<&String> = bash.fields.keys().chain(rust.fields.keys()).collect();
@@ -847,9 +1022,9 @@ fn compare(sc: &Sc, w: &World, mut bash: Obs, mut rust: Obs) -> (usize, Vec<Stri
         let (b, r) = (bash.tree.get(path), rust.tree.get(path));
         if b != r {
             diffs.push(format!(
-                "file {path}: bash {:?} port {:?}",
-                b.map(|t| preview(t)),
-                r.map(|t| preview(t))
+                "file {path}: first differing line: bash {:?} port {:?}",
+                b.map(|t| first_difference(t, r.map_or(&[][..], Vec::as_slice))),
+                r.map(|t| first_difference(t, b.map_or(&[][..], Vec::as_slice)))
             ));
         }
     }
@@ -972,7 +1147,7 @@ impl Rng {
 
 fn random_prompt(rng: &mut Rng) -> Vec<u8> {
     let sizes = [0usize, 1, 17, 500, 4096, 131_070, 131_071, 131_072, 131_073, 140_000];
-    let fragments: [&[u8]; 9] = [
+    let fragments: [&[u8]; 13] = [
         b"plain",
         b" spaced  out ",
         b"it's",
@@ -982,6 +1157,10 @@ fn random_prompt(rng: &mut Rng) -> Vec<u8> {
         b"\n",
         "caf\u{e9} \u{2713}".as_bytes(),
         b"\t",
+        b"\r",
+        b"\r\n",
+        b"nul\0byte",
+        b"  ",
     ];
     let mut out = Vec::new();
     if rng.chance(55) {
@@ -991,8 +1170,9 @@ fn random_prompt(rng: &mut Rng) -> Vec<u8> {
     } else {
         out = xs(*rng.pick(&sizes));
     }
-    if rng.chance(30) {
-        out.extend(std::iter::repeat_n(b'\n', 1 + rng.below(3)));
+    if rng.chance(45) {
+        let endings: [&[u8]; 6] = [b"\n", b"\n\n", b"\r\n", b"\r", b"\n\r", b"\r\n\r\n"];
+        out.extend_from_slice(rng.pick(&endings));
     }
     out
 }
@@ -1017,6 +1197,10 @@ fn random_scenario(rng: &mut Rng, backend: &'static str, index: usize) -> Sc {
     sc.prompt = random_prompt(rng);
     sc.profile_name = (*rng.pick(&["profile", "pro file", "pr'ofile"])).to_string();
     sc.repo_name = (*rng.pick(&["repo", "re po", "re'po"])).to_string();
+    if rng.chance(7) {
+        sc.repo_raw = Some(rng.pick(&[&b"re\xffpo"[..], b"r\xe9po", b"\xc0\xaf"]).to_vec());
+    }
+    sc.prompt_symlink = rng.chance(12);
     sc.home_name = (*rng.pick(&["home", "ho me"])).to_string();
     sc.log_rel = (*rng.pick(&[
         "logs/run.log",
@@ -1072,7 +1256,7 @@ fn random_scenario(rng: &mut Rng, backend: &'static str, index: usize) -> Sc {
             Some(""),
             Some("@PROFILE@/settings-rehearsal.json"),
             Some("@PROFILE@/opencode-rehearsal.json"),
-            Some("@PROFILE@/missing.json"),
+            Some(" "),
         ][settings];
         if let Some(value) = value {
             sc.vars.insert("MAINTAINER_SETTINGS".to_string(), value.to_string());
@@ -1084,22 +1268,24 @@ fn random_scenario(rng: &mut Rng, backend: &'static str, index: usize) -> Sc {
             "",
             "@PROFILE@/cursor-rehearsal",
             "@PROFILE@/cursor",
-            "@PROFILE@/nowhere",
+            " ",
             "@PROFILE@/cursor-rehearsal",
         ][cursor];
         sc.vars.insert("MAINTAINER_CURSOR_DIR".to_string(), value.to_string());
     }
     let task = sc.task.clone();
     if rng.chance(50) {
-        sc.vars.insert(format!("THINKING_{task}"), (*rng.pick(&["31999", "", "5"])).to_string());
+        sc.vars
+            .insert(format!("THINKING_{task}"), (*rng.pick(&["31999", "", "5", " "])).to_string());
     }
     if rng.chance(40) {
-        sc.vars.insert("MAINTAINER_THINKING".to_string(), (*rng.pick(&["777", ""])).to_string());
+        sc.vars
+            .insert("MAINTAINER_THINKING".to_string(), (*rng.pick(&["777", "", "\t"])).to_string());
     }
     if rng.chance(45) {
         sc.vars.insert(
             format!("SUBAGENT_MODEL_{task}"),
-            (*rng.pick(&["sonnet", "", "haiku"])).to_string(),
+            (*rng.pick(&["sonnet", "", "haiku", " "])).to_string(),
         );
     }
     if backend == "opencode" {
@@ -1111,6 +1297,9 @@ fn random_scenario(rng: &mut Rng, backend: &'static str, index: usize) -> Sc {
             4..=5 => {
                 sc.vars.insert("GROQ_API_KEY".to_string(), String::new());
             }
+            6 => {
+                sc.vars.insert("GROQ_API_KEY".to_string(), " ".to_string());
+            }
             _ => {}
         }
         sc.vars.remove("OPENCODE_MODEL");
@@ -1121,11 +1310,23 @@ fn random_scenario(rng: &mut Rng, backend: &'static str, index: usize) -> Sc {
             8 => {
                 sc.vars.insert("OPENCODE_MODEL".to_string(), String::new());
             }
+            9 if rng.chance(50) => {
+                sc.vars.insert("OPENCODE_MODEL".to_string(), " ".to_string());
+            }
             _ => {}
         }
         if rng.chance(55) {
-            let contents: [&[u8]; 6] =
-                [b"key-1\n", b"a\nb\n\n", b"", b"\n", b" sp\tk \r\n", b"nonewline"];
+            let contents: [&[u8]; 9] = [
+                b"key-1\n",
+                b"a\nb\n\n",
+                b"",
+                b"\n",
+                b" sp\tk \r\n",
+                b"nonewline",
+                b"ke\0y\n",
+                b"\0",
+                b"crlf\r\nkey\r\n",
+            ];
             sc.key_file = Some(rng.pick(&contents).to_vec());
         }
         sc.auth_json = rng.chance(30);
@@ -1184,6 +1385,17 @@ fn common(backend: &'static str) -> Vec<Sc> {
         Sc::new(backend, "model with spaces and quotes").model("m o\"d'el"),
         Sc::new(backend, "empty model").model(""),
         Sc::new(backend, "model with a slash").model("groq/other-model"),
+        Sc::new(backend, "prompt with CRLF line endings").prompt(b"one\r\ntwo\r\n".to_vec()),
+        Sc::new(backend, "prompt ending in a lone CR").prompt(b"one\r".to_vec()),
+        Sc::new(backend, "prompt ending in CR LF CR LF").prompt(b"one\r\n\r\n".to_vec()),
+        Sc::new(backend, "prompt ending in LF CR").prompt(b"one\n\r".to_vec()),
+        Sc::new(backend, "prompt file that is a symlink").prompt_symlink(),
+        Sc::new(backend, "prompt of 131072 bytes behind a symlink")
+            .prompt(xs(131_072))
+            .prompt_symlink(),
+        Sc::new(backend, "checkout directory name that is not UTF-8").repo_raw(b"re\xffpo"),
+        Sc::new(backend, "checkout directory name in Latin-1").repo_raw(b"r\xe9po"),
+        Sc::new(backend, "prompt with a NUL byte").prompt(b"a\0b\n".to_vec()),
         Sc::new(backend, "another task").task("issues"),
         Sc::new(backend, "scripts directory missing").scripts(Scripts::NoDir),
     ];
@@ -1200,7 +1412,7 @@ fn common(backend: &'static str) -> Vec<Sc> {
 fn claude_scenarios() -> Vec<Sc> {
     let mut list = common("claude");
     let c = |label: &str| Sc::new("claude", label);
-    list.extend([
+    list.extend(vec![
         c("no settings file").no_file("settings.json"),
         c("rehearsal wall rendered").file("settings-rehearsal.json"),
         c("run holds the rehearsal wall")
@@ -1214,6 +1426,13 @@ fn claude_scenarios() -> Vec<Sc> {
         c("scripts directory without transcript.py").scripts(Scripts::WithoutFilter),
         c("empty MAINTAINER_SCRIPTS").scripts(Scripts::Empty),
         c("python3 missing").no_program("python3"),
+        c("thinking budget of one space").var("THINKING_review", " "),
+        c("general thinking budget of a tab").var("MAINTAINER_THINKING", "\t"),
+        c("empty task budget and a general budget of a space")
+            .var("THINKING_review", "")
+            .var("MAINTAINER_THINKING", " "),
+        c("subagent model of one space").var("SUBAGENT_MODEL_review", " "),
+        c("wall variable of one space").var("MAINTAINER_SETTINGS", " "),
         c("task name that is not a shell identifier (P2B-6)").task("readonly-review"),
         c("thinking for the task").var("THINKING_review", "31999"),
         c("thinking for the general fallback").var("MAINTAINER_THINKING", "777"),
@@ -1247,7 +1466,7 @@ fn claude_scenarios() -> Vec<Sc> {
 fn codex_scenarios() -> Vec<Sc> {
     let mut list = common("codex");
     let c = |label: &str| Sc::new("codex", label);
-    list.extend([
+    list.extend(vec![
         c("settings files present change nothing")
             .file("settings.json")
             .file("settings-rehearsal.json"),
@@ -1274,8 +1493,13 @@ fn cursor_scenarios() -> Vec<Sc> {
         bytes.extend_from_slice(tail);
         bytes
     };
-    list.extend([
+    list.extend(vec![
         c("no wall file").no_file("cursor/cli-config.json"),
+        c("wall variable of one space").var("MAINTAINER_CURSOR_DIR", " "),
+        c("prompt that is a symlink to 131071 bytes").prompt(xs(131_071)).prompt_symlink(),
+        c("prompt with a lone CR in the middle").prompt(b"a\rb\n".to_vec()),
+        c("prompt of only a NUL byte").prompt(b"\0".to_vec()),
+        c("prompt with CRLF and a NUL byte").prompt(b"a\r\n\0b\r\n".to_vec()),
         c("rehearsal wall rendered").file("cursor-rehearsal/cli-config.json"),
         c("run holds the rehearsal wall")
             .file("cursor-rehearsal/cli-config.json")
@@ -1317,8 +1541,20 @@ fn cursor_scenarios() -> Vec<Sc> {
 fn opencode_scenarios() -> Vec<Sc> {
     let mut list = common("opencode");
     let c = |label: &str| Sc::new("opencode", label);
-    list.extend([
+    list.extend(vec![
         c("no config file").no_file("opencode.json"),
+        c("OPENCODE_MODEL of one space with a bare model")
+            .model("sonnet")
+            .var("OPENCODE_MODEL", " "),
+        c("OPENCODE_MODEL of a tab and a space with a bare model")
+            .model("sonnet")
+            .var("OPENCODE_MODEL", "\t "),
+        c("key of one space in the environment").var("GROQ_API_KEY", " ").key_file(b"file-key\n"),
+        c("wall variable of one space").var("MAINTAINER_SETTINGS", " "),
+        c("key file with a NUL byte").no_var("GROQ_API_KEY").key_file(b"ke\0y\n"),
+        c("key file of only a NUL byte").no_var("GROQ_API_KEY").key_file(b"\0"),
+        c("key file with a NUL byte and an environment key").key_file(b"ke\0y\n"),
+        c("key file with CRLF lines").no_var("GROQ_API_KEY").key_file(b"one\r\ntwo\r\n"),
         c("rehearsal wall rendered").file("opencode-rehearsal.json"),
         c("run holds the rehearsal wall")
             .file("opencode-rehearsal.json")
@@ -1472,7 +1708,8 @@ fn the_harness_sees_a_dropped_argument_in_every_backend() {
 #[test]
 fn the_harness_sees_a_changed_environment_a_sink_and_a_working_directory() {
     precondition();
-    let sc = Sc::new("opencode", "control");
+    // The key comes from the key file, so the plan itself names it.
+    let sc = Sc::new("opencode", "control").no_var("GROQ_API_KEY").key_file(b"file-key\n");
     let env_changed = differences_with(&sc, &|plan| {
         let mut stages: Vec<StageSpec> = plan.pipeline.stages.iter().cloned().collect();
         stages[0].env.retain(|(name, _)| name != "GROQ_API_KEY");
@@ -1493,6 +1730,77 @@ fn the_harness_sees_a_changed_environment_a_sink_and_a_working_directory() {
         plan.pipeline.stages = mx_core::NonEmpty::from_vec(stages).expect("not empty");
     });
     assert!(cwd_changed.iter().any(|d| d.contains("calls.log")), "a changed cwd went unnoticed");
+}
+
+/// Runs one scenario with the first stage altered and returns the differences found.
+fn first_stage_differences(sc: &Sc, change: impl Fn(&mut StageSpec)) -> Vec<String> {
+    differences_with(sc, &|plan| {
+        let mut stages: Vec<StageSpec> = plan.pipeline.stages.iter().cloned().collect();
+        change(&mut stages[0]);
+        plan.pipeline.stages = mx_core::NonEmpty::from_vec(stages).expect("not empty");
+    })
+}
+
+#[test]
+fn the_harness_sees_a_variable_the_plan_adds_to_a_stage_that_no_stub_logs_by_value() {
+    precondition();
+    for backend in ["claude", "codex", "cursor", "opencode"] {
+        let sc = Sc::new(backend, "control");
+        let diffs = first_stage_differences(&sc, |stage| {
+            stage.env.push(("EVIL_EXTRA".to_string(), "1".to_string()));
+        });
+        assert!(diffs.iter().any(|d| d.contains("calls.log")), "{backend}: {diffs:?}");
+    }
+}
+
+#[test]
+fn the_harness_sees_home_in_the_stage_environment() {
+    precondition();
+    for backend in ["claude", "codex", "cursor", "opencode"] {
+        let sc = Sc::new(backend, "control");
+        let diffs = first_stage_differences(&sc, |stage| {
+            stage.env.push(("HOME".to_string(), "/root".to_string()));
+        });
+        assert!(diffs.iter().any(|d| d.contains("calls.log")), "{backend}: {diffs:?}");
+    }
+}
+
+#[test]
+fn the_harness_sees_standard_error_opened_a_second_time_instead_of_shared() {
+    precondition();
+    for backend in ["codex", "cursor", "opencode"] {
+        let sc = Sc::new(backend, "control");
+        let diffs = differences_with(&sc, &|plan| {
+            let mut stages: Vec<StageSpec> = plan.pipeline.stages.iter().cloned().collect();
+            let Sink::AppendFile(path) = stages[0].stdout.clone() else {
+                panic!("a single-stage plan appends its output to the log");
+            };
+            stages[0].stderr = Sink::AppendFile(path);
+            plan.pipeline.stages = mx_core::NonEmpty::from_vec(stages).expect("not empty");
+        });
+        assert!(
+            diffs.iter().any(|d| d.contains("calls.log")),
+            "{backend}: two opens of the log read as one: {diffs:?}"
+        );
+    }
+}
+
+#[test]
+fn the_harness_sees_the_key_exported_to_the_whole_run() {
+    precondition();
+    let sc = Sc::new("opencode", "control").no_var("GROQ_API_KEY").key_file(b"file-key\n");
+    let diffs = differences_with(&sc, &|plan| {
+        plan.exports.push(Export { name: "GROQ_API_KEY".to_string(), value: "x".to_string() });
+    });
+    assert!(diffs.iter().any(|d| d.starts_with("run.exports")), "{diffs:?}");
+}
+
+#[test]
+fn the_harness_sees_a_variable_the_plan_forgets_to_export() {
+    precondition();
+    let sc = Sc::new("claude", "control").var("THINKING_review", "9");
+    let diffs = differences_with(&sc, &|plan| plan.exports.clear());
+    assert!(diffs.iter().any(|d| d.starts_with("run.exports")), "{diffs:?}");
 }
 
 #[test]
@@ -1541,6 +1849,8 @@ fn the_bash_run_of_each_backend_starts_the_programs_the_port_plans() {
         "ARG bypassPermissions\nARG --model\nARG opus\nARG --add-dir\n",
         "ARG stream-json\nARG --verbose\n",
         "ENV MAX_THINKING_TOKENS=9\nENV CLAUDE_CODE_SUBAGENT_MODEL=<unset>\n",
+        "ENVNAMES LC_ALL MAX_THINKING_TOKENS PATH\n",
+        "FDS stdout=pipe stderr=file n/a\n",
         "CALL python3\nARGC 3\n",
     ] {
         assert!(claude.contains(line), "claude log lacks {line:?}:\n{claude}");
@@ -1552,6 +1862,9 @@ fn the_bash_run_of_each_backend_starts_the_programs_the_port_plans() {
         "{codex}"
     );
     assert!(codex.contains("ARG --skip-git-repo-check\nARG -\n"), "{codex}");
+    // The agent's whole environment is PATH and LC_ALL: the run owns the rest.
+    assert!(codex.contains("ENVNAMES LC_ALL PATH\n"), "{codex}");
+    assert!(codex.contains("FDS stdout=file stderr=file shared\n"), "{codex}");
     let cursor = bash_calls(&Sc::new("cursor", "oracle"));
     assert!(
         cursor.contains(
@@ -1561,6 +1874,7 @@ fn the_bash_run_of_each_backend_starts_the_programs_the_port_plans() {
     );
     assert!(cursor.contains("ARG $'the prompt text\\nsecond line'\n"), "{cursor}");
     assert!(cursor.contains("ENV CURSOR_CONFIG_DIR="), "{cursor}");
+    assert!(cursor.contains("ENVNAMES CURSOR_CONFIG_DIR LC_ALL PATH\n"), "{cursor}");
     assert!(
         cursor
             .contains("STDIN 0 e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855\n"),
@@ -1574,5 +1888,14 @@ fn the_bash_run_of_each_backend_starts_the_programs_the_port_plans() {
         "{opencode}"
     );
     assert!(opencode.contains("ENV OPENCODE_CONFIG="), "{opencode}");
+    assert!(opencode.contains("ENVNAMES GROQ_API_KEY LC_ALL OPENCODE_CONFIG PATH\n"), "{opencode}");
+    let from_file =
+        bash_calls(&Sc::new("opencode", "oracle").no_var("GROQ_API_KEY").key_file(b"file-key\n"));
+    assert!(
+        from_file.contains("ENVNAMES GROQ_API_KEY LC_ALL OPENCODE_CONFIG PATH\n"),
+        "{from_file}"
+    );
+    let raw = bash_calls(&Sc::new("claude", "oracle").repo_raw(b"re\xffpo"));
+    assert!(raw.contains("CWD ") && raw.contains("re\u{fffd}po\n"), "{raw}");
     assert!(opencode.contains("ENV GROQ_API_KEY=len:13 "), "{opencode}");
 }

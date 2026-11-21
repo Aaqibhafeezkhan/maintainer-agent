@@ -373,3 +373,35 @@ fn claude_asks_the_host_about_the_filter_and_nothing_else_when_planning() {
     let host = FakeHost::new().with_file(FILTER, "");
     let _ = backend("claude").plan(&ctx(), &host, &request()).expect("a plan");
 }
+
+// --- whitespace is a value: the shell's `${NAME:-}` tests for empty only ---------------
+
+#[test]
+fn a_thinking_budget_of_whitespace_is_exported_as_it_is() {
+    let ctx = with(ctx(), "THINKING_review", " ");
+    let plan = backend("claude").plan(&ctx, &host_with_filter(), &request()).expect("a plan");
+    assert_eq!(exports(&plan), [("MAX_THINKING_TOKENS", " ")]);
+}
+
+#[test]
+fn a_general_thinking_budget_of_a_tab_is_the_fallback_for_an_empty_task_budget() {
+    let ctx = with(with(ctx(), "THINKING_review", ""), "MAINTAINER_THINKING", "\t");
+    let plan = backend("claude").plan(&ctx, &host_with_filter(), &request()).expect("a plan");
+    assert_eq!(exports(&plan), [("MAX_THINKING_TOKENS", "\t")]);
+}
+
+#[test]
+fn a_subagent_model_of_whitespace_is_exported_as_it_is() {
+    let ctx = with(ctx(), "SUBAGENT_MODEL_review", " ");
+    let plan = backend("claude").plan(&ctx, &host_with_filter(), &request()).expect("a plan");
+    assert_eq!(exports(&plan), [("CLAUDE_CODE_SUBAGENT_MODEL", " ")]);
+}
+
+#[test]
+fn a_maintainer_settings_of_whitespace_is_a_path_and_not_the_default() {
+    let host = FakeHost::new().with_program("claude").without_file(" ");
+    let ctx = with(ctx(), "MAINTAINER_SETTINGS", " ");
+    assert_eq!(backend("claude").check(&ctx, &host), Err("missing  ".to_string()));
+    let plan = backend("claude").plan(&ctx, &host_with_filter(), &request()).expect("a plan");
+    assert_eq!(argv(&plan.pipeline.stages.as_slice()[0])[3], " ");
+}

@@ -250,3 +250,46 @@ fn the_model_is_passed_after_dash_m_unchanged() {
     let plan = backend("cursor").plan(&ctx(), &prompt_of(b"p".to_vec()), &req).expect("a plan");
     assert_eq!(argv(only_stage(&plan))[4..6], ["-m", "auto"]);
 }
+
+// --- the shell cuts newlines at the end of a command substitution and nothing else ------
+
+#[test]
+fn a_carriage_return_before_the_final_newline_stays_in_the_argument() {
+    let plan =
+        backend("cursor").plan(&ctx(), &prompt_of(b"a\r\n".to_vec()), &request()).expect("a plan");
+    assert_eq!(argv(only_stage(&plan))[6], "a\r");
+}
+
+#[test]
+fn a_prompt_that_ends_in_a_carriage_return_keeps_it() {
+    let plan =
+        backend("cursor").plan(&ctx(), &prompt_of(b"a\r".to_vec()), &request()).expect("a plan");
+    assert_eq!(argv(only_stage(&plan))[6], "a\r");
+}
+
+#[test]
+fn only_the_trailing_newlines_of_a_crlf_prompt_are_cut() {
+    let plan = backend("cursor")
+        .plan(&ctx(), &prompt_of(b"a\r\n\r\n".to_vec()), &request())
+        .expect("a plan");
+    assert_eq!(argv(only_stage(&plan))[6], "a\r\n\r");
+}
+
+#[test]
+fn a_newline_then_a_carriage_return_at_the_end_cuts_nothing() {
+    let plan =
+        backend("cursor").plan(&ctx(), &prompt_of(b"a\n\r".to_vec()), &request()).expect("a plan");
+    assert_eq!(argv(only_stage(&plan))[6], "a\n\r");
+}
+
+#[test]
+fn a_maintainer_cursor_dir_of_whitespace_is_a_directory_and_not_the_default() {
+    let host = FakeHost::new().with_program("cursor-agent").without_file(" /cli-config.json");
+    let ctx = with(ctx(), "MAINTAINER_CURSOR_DIR", " ");
+    assert_eq!(
+        backend("cursor").check(&ctx, &host),
+        Err("no cursor wall at  ; run ./install.sh".to_string())
+    );
+    let plan = backend("cursor").plan(&ctx, &prompt_of(b"p".to_vec()), &request()).expect("a plan");
+    assert_eq!(env(only_stage(&plan)), [("CURSOR_CONFIG_DIR", " ")]);
+}
