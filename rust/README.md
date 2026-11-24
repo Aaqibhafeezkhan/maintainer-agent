@@ -25,6 +25,7 @@ A binary's `main` deals with `SIGPIPE`, because Rust ignores it. Restoring the d
 `crates/mx-doctor` is `bin/maintainer-doctor` in Rust: the library holds every check as a decision over facts read through the ports, and the binary is named `maintainer-doctor`. Its tests are in `crates/mx-doctor/tests/`:
 
 - `blackbox.sh`: the doctor characterization cases of `tests/characterization/` run against an assembled tree (`rust/scripts/assemble-tree.sh`), three times, with the four pinned differences named in the script.
+- `flock.rs`: the flock check on a real search path. The check is `command -v flock`, so bash decides: a flock file without the execute bit still counts as on `PATH`, a directory or a dangling link named flock does not, and a flock that exits non-zero counts and is never run. `doctor-core.sh` pins the same five cases for both builds.
 - `differential.sh`: generated hosts run through both programs, comparing standard output, standard error, exit code, the order of every external call and the state tree.
 - `mutants.py`: the mutation table. Each mutant changes one guard in a copy of the tree and must turn a named test red.
 
@@ -71,7 +72,7 @@ Tests in `crates/mx-install/tests/`:
 
 - `plan.rs`, `apply_fake.rs`: the decisions and the sinks, with no machine and with a machine that records every change (and panics on one when a test forbids them).
 - `install_flow.rs`, `uninstall_flow.rs`, `scaffold_flow.rs`, `scheduler_flow.rs`, `coreutils.rs`, `umask.rs`: each program against real files in a scratch directory, with every tool (`systemctl`, `flock`, `git`, `date`, `python3`, `crontab`, `notify-send`) scripted. `scaffold_flow.rs` compares its output with the golden files of the characterization suite.
-- `blackbox.sh`: the install characterization cases against an assembled tree, three runs, with the two pinned differences named in the script.
+- `blackbox.sh`: the install characterization cases against an assembled tree, three runs, with the two pinned differences named in the script. Every list of failing cases is sorted under the C locale before `comm` reads it, and every difference is printed, not only the first. `blackbox.sh --self-test` builds no tree: it runs a stand-in suite with the real `find` and with a `find` that reverses its NUL-separated records, and checks that the verdict and the report do not move. `tests/run-tests.sh` runs it.
 - `differential.sh`: generated hosts run through both programs, comparing standard output, standard error, exit status, the order of every external call and the state of HOME and of the tree.
 - `mutants.py`: the mutation table. Each mutant changes one guard in a copy of the tree and must turn a named test red.
 
