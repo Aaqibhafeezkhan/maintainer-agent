@@ -10,12 +10,24 @@ middle digit.
 
 ## [Unreleased]
 
+### Changed
+
+- **`tests/run-tests.sh` is a driver plus eleven part files in `tests/suites/`.** One
+  `shellcheck` over the 12,260 line file peaked at 9.2 GB resident (14.4 GB in one run). The sweep
+  reached 9 to 10 GB three times in one day, and systemd-oomd killed the terminal scope once.
+  The cases are the same cases in the same order, run in the same shell: the suite still prints
+  1851 passed, 0 failed (260 source-coupled cases) and the same lines. The driver sources the
+  parts from an explicit list and fails naming any part that is missing, listed twice, without a
+  bash shebang, empty of cases or unlisted, and fails the run if a part ends the shell before the
+  summary. The exact total stays pinned by the `tests` figure in `check_claims.sh`. The largest file now lints at 484 MB.
+  A new case goes into the part that fits its topic. The skip line for a source-coupled block now names the part file and the line in it.
+
 ### Fixed
 
 - **The shellcheck sweep cap moves from 12G to 18G.** `shellcheck` on `tests/run-tests.sh`
   (12,260 lines) peaks at 14.4 GB resident, so the 12G scope killed the linter and every
-  commit hook failed on that file. The cap is still `MAGENT_SWEEP_MEM_MAX`. Splitting the
-  file so no single lint needs this much is the follow-up.
+  commit hook failed on that file. The cap is still `MAGENT_SWEEP_MEM_MAX`. The split above
+  is the follow-up that makes no single lint need this much.
 
 ### Security
 
